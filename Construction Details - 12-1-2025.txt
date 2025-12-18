@@ -1,0 +1,765 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { Upload, FileSpreadsheet, Check, Download, BrainCircuit, FileImage, RefreshCw, Save, AlertCircle, FileText, Bug, Play, RotateCcw, X, Plus, Trash2, StopCircle, Layers } from 'lucide-react';
+
+// Configurable limits
+const MAX_FILE_SIZE_MB = 25; 
+
+const getInitialFormData = () => [
+  { section: "Header", label: "Construction Details", value: "", type: "header" },
+  { section: "Spacer", label: "", value: "", type: "spacer" },
+  
+  // Core Structure
+  { section: "Structural", label: "Foundation", value: "", type: "field" },
+  { section: "Structural", label: "Basement", value: "", type: "field" },
+  { section: "Structural", label: "Structural Frame", value: "", type: "field" },
+  { section: "Structural", label: "Corridor", value: "", type: "field" },
+  { section: "Structural", label: "Exterior Walls", value: "", type: "field" },
+  { section: "Structural", label: "Windows", value: "", type: "field" },
+  { section: "Structural", label: "Roof Framing and Finish", value: "", type: "field" },
+  { section: "Spacer", label: "", value: "", type: "spacer" },
+  
+  // Dimensions
+  { section: "Dimensions", label: "Ceiling Height in Feet", value: "", type: "field" },
+  { section: "Dimensions", label: "Clear Height in Feet", value: "", type: "field" },
+  { section: "Dimensions", label: "Bay Depth in Feet", value: "", type: "field" },
+  { section: "Dimensions", label: "Column Spacing in Feet", value: "", type: "field" },
+  { section: "Dimensions", label: "Number of Dock Height Loading Doors", value: "", type: "field" },
+  { section: "Dimensions", label: "Number of Drive-In Doors", value: "", type: "field" },
+  { section: "Spacer", label: "", value: "", type: "spacer" },
+  
+  // Finishes
+  { section: "Header", label: "Interior Finishes", value: "", type: "header" },
+  { section: "Finishes", label: "Interior Floors", value: "", type: "field" },
+  { section: "Finishes", label: "Interior Walls", value: "", type: "field" },
+  { section: "Finishes", label: "Interior Ceilings", value: "", type: "field" },
+  { section: "Finishes", label: "Interior Lighting", value: "", type: "field" },
+  { section: "Finishes", label: "Floor Plate", value: "", type: "field" },
+  { section: "Spacer", label: "", value: "", type: "spacer" },
+  
+  // Systems
+  { section: "Systems", label: "HVAC", value: "", type: "field" },
+  { section: "Systems", label: "Electrical", value: "", type: "field" },
+  { section: "Systems", label: "Plumbing", value: "", type: "field" },
+  { section: "Systems", label: "Heating", value: "", type: "field" },
+  { section: "Systems", label: "Air Conditioning", value: "", type: "field" },
+  { section: "Systems", label: "Hot Water", value: "", type: "field" },
+  { section: "Systems", label: "Utility Meters - Tenants", value: "", type: "field" },
+  { section: "Systems", label: "Utility Meters - Central", value: "", type: "field" },
+  { section: "Systems", label: "Elevators", value: "", type: "field" },
+  { section: "Systems", label: "Restrooms", value: "", type: "field" },
+  { section: "Systems", label: "Sprinklers", value: "", type: "field" },
+  { section: "Systems", label: "Other Fire Safety", value: "", type: "field" },
+  { section: "Systems", label: "Security", value: "", type: "field" },
+  { section: "Systems", label: "Climate Control", value: "", type: "field" },
+  { section: "Systems", label: "Drive Aisles", value: "", type: "field" },
+  { section: "Systems", label: "Manager's Residence", value: "", type: "field" },
+  { section: "Systems", label: "Office", value: "", type: "field" },
+  { section: "Systems", label: "Call Systems", value: "", type: "field" },
+  { section: "Systems", label: "Care Stations", value: "", type: "field" },
+  { section: "Systems", label: "Memory Care Security", value: "", type: "field" },
+  
+  // Unit Description
+  { section: "Header", label: "Unit Description", value: "", type: "header" },
+  { section: "Units", label: "Entry Type", value: "", type: "field" },
+  { section: "Units", label: "Interior Walls", value: "", type: "field" },
+  { section: "Units", label: "Floor Cover", value: "", type: "field" },
+  { section: "Units", label: "Ceiling Heights", value: "", type: "field" },
+  { section: "Units", label: "Kitchen Equipment", value: "", type: "field" },
+  { section: "Units", label: "Laundry Facilities", value: "", type: "field" },
+  { section: "Units", label: "Bathroom Fixtures", value: "", type: "field" },
+  { section: "Units", label: "Garages", value: "", type: "field" },
+  { section: "Units", label: "Doors", value: "", type: "field" },
+  { section: "Units", label: "Partitions", value: "", type: "field" },
+  
+  // Site
+  { section: "Header", label: "Site Improvements", value: "", type: "header" },
+  { section: "Site", label: "Landscaping", value: "", type: "field" },
+  { section: "Site", label: "No. of Customer Parking Spaces", value: "", type: "field" },
+  { section: "Site", label: "Gates/Fencing", value: "", type: "field" },
+  { section: "Site", label: "Paving", value: "", type: "field" },
+];
+
+// Helper to ignore "non-answers"
+const isValidValue = (val) => {
+  if (!val) return false;
+  const lower = val.toString().toLowerCase().trim();
+  const forbidden = [
+    "not specified", 
+    "not visible", 
+    "n/a", 
+    "unknown", 
+    "see plan", 
+    "refer to structural", 
+    "cannot be determined", 
+    "none found",
+    "not applicable",
+    "undetermined"
+  ];
+  if (forbidden.some(f => lower.includes(f))) return false;
+  // If it's literally just "none" and the field implies a count or system, we might want to keep it, 
+  // but usually "none" in construction means "does not exist", so we keep "None". 
+  // We only filter out "missing data" phrases.
+  return true;
+};
+
+const App = () => {
+  const [activeTab, setActiveTab] = useState('upload');
+  const [uploadedFiles, setUploadedFiles] = useState([]); 
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisComplete, setAnalysisComplete] = useState(false);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [statusMsg, setStatusMsg] = useState('');
+  const [progress, setProgress] = useState(0); 
+  const [rawResponse, setRawResponse] = useState('');
+  const [showDebug, setShowDebug] = useState(false);
+  const [excelLibReady, setExcelLibReady] = useState(false);
+  const [formData, setFormData] = useState(getInitialFormData());
+  const abortAnalysis = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      uploadedFiles.forEach(file => {
+        if (file.previewUrl) URL.revokeObjectURL(file.previewUrl);
+      });
+    };
+  }, [uploadedFiles]);
+
+  useEffect(() => {
+    const script = document.createElement('script');
+    script.src = "https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js";
+    script.async = true;
+    script.onload = () => setExcelLibReady(true);
+    document.body.appendChild(script);
+
+    return () => {
+      try {
+        document.body.removeChild(script);
+      } catch (e) {}
+    };
+  }, []);
+
+  const handleFileUpload = (event) => {
+    const files = Array.from(event.target.files);
+    if (files.length === 0) return;
+
+    const oversizeFiles = files.filter(file => file.size > MAX_FILE_SIZE_MB * 1024 * 1024);
+    if (oversizeFiles.length > 0) {
+      setErrorMsg(`Warning: Some files are larger than ${MAX_FILE_SIZE_MB}MB.`);
+    }
+
+    const newFiles = files.map(file => ({
+      id: Math.random().toString(36).substr(2, 9),
+      name: file.name,
+      type: file.type,
+      rawFile: file, 
+      previewUrl: URL.createObjectURL(file) 
+    }));
+
+    setUploadedFiles(prev => [...prev, ...newFiles]);
+    setActiveTab('analyze');
+    setAnalysisComplete(false);
+    if (oversizeFiles.length === 0) setErrorMsg(null);
+    setStatusMsg('');
+  };
+
+  const removeFile = (idToRemove) => {
+    setUploadedFiles(prev => {
+      const fileToRemove = prev.find(f => f.id === idToRemove);
+      if (fileToRemove && fileToRemove.previewUrl) URL.revokeObjectURL(fileToRemove.previewUrl);
+      return prev.filter(f => f.id !== idToRemove);
+    });
+    if (uploadedFiles.length <= 1) setAnalysisComplete(false);
+  };
+
+  const removeAllFiles = () => {
+    uploadedFiles.forEach(f => URL.revokeObjectURL(f.previewUrl));
+    setUploadedFiles([]);
+    setAnalysisComplete(false);
+    setProgress(0);
+  };
+
+  const handleReset = () => {
+    removeAllFiles();
+    setIsAnalyzing(false);
+    setErrorMsg(null);
+    setStatusMsg('');
+    setRawResponse('');
+    setFormData(getInitialFormData());
+    setActiveTab('upload');
+    abortAnalysis.current = false;
+  };
+
+  const stopAnalysis = () => {
+    abortAnalysis.current = true;
+    setIsAnalyzing(false);
+    setStatusMsg('Analysis stopped by user.');
+  };
+
+  const readFileAsBase64 = (file) => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handleAnalyze = async () => {
+    if (uploadedFiles.length === 0) return;
+    
+    setIsAnalyzing(true);
+    setErrorMsg(null);
+    setRawResponse('');
+    setStatusMsg('Initializing sequential analysis...');
+    setProgress(0);
+    abortAnalysis.current = false;
+
+    let currentFormData = [...formData];
+    let allFileResults = [];
+    
+    try {
+      // ---------------------------------------------------------
+      // PHASE 1: SEQUENTIAL EXTRACTION
+      // ---------------------------------------------------------
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        if (abortAnalysis.current) break;
+
+        const fileObj = uploadedFiles[i];
+        const displayIndex = i + 1;
+        const total = uploadedFiles.length;
+        
+        if (fileObj.rawFile.size > MAX_FILE_SIZE_MB * 1024 * 1024) {
+          setStatusMsg(`Skipping file ${displayIndex}: Too large...`);
+          continue;
+        }
+
+        setStatusMsg(`Scanning file ${displayIndex} of ${total}: ${fileObj.name}...`);
+        setProgress(Math.round(((i) / total) * 90)); 
+
+        try {
+          const base64String = await readFileAsBase64(fileObj.rawFile);
+          const base64Data = base64String.split(',')[1];
+          
+          const promptText = `
+            You are a Construction Estimator analyzing a SINGLE file (File ${displayIndex}/${total}: ${fileObj.name}).
+            Extract permanent material specifications to fill out a spreadsheet.
+            Keys to look for: 
+            ${currentFormData.filter(item => item.type === 'field').map(item => item.label).join(', ')}
+
+            CRITICAL:
+            1. PERMANENT MATERIALS ONLY. Ignore temporary items.
+            2. Be specific (e.g., "Brick Veneer" > "Brick").
+            3. Count doors carefully (Total = Single Count * Typ Multiplier).
+            4. If a feature is NOT VISIBLE or cannot be determined in this specific file, return null or an empty string. DO NOT return "Not visible" or "See plan".
+            
+            Return a VALID JSON object.
+          `;
+
+          const payload = {
+            contents: [{
+              parts: [
+                { text: promptText },
+                { inlineData: { mimeType: fileObj.type, data: base64Data } }
+              ]
+            }]
+          };
+
+          const apiKey = ""; 
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+
+          if (!response.ok) continue;
+
+          const result = await response.json();
+          let textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
+          
+          if (textResponse) {
+             setRawResponse(prev => prev + `\n--- FILE: ${fileObj.name} ---\n` + textResponse + "\n");
+
+             const firstBracket = textResponse.indexOf('{');
+             const lastBracket = textResponse.lastIndexOf('}');
+             if (firstBracket !== -1 && lastBracket !== -1) {
+               textResponse = textResponse.substring(firstBracket, lastBracket + 1);
+             } else {
+               textResponse = textResponse.replace(/```json/g, '').replace(/```/g, '').trim();
+             }
+
+             const extractedData = JSON.parse(textResponse);
+             
+             // SAVE for final synthesis
+             allFileResults.push({ source: fileObj.name, data: extractedData });
+
+             // Update UI immediately (Draft view) with ADDITIVE logic + FILTERING
+             currentFormData = currentFormData.map(item => {
+                if (item.type === 'field') {
+                  const targetKey = item.label.toLowerCase().replace(/\s+/g, '');
+                  const foundKey = Object.keys(extractedData).find(k => 
+                    k.toLowerCase().replace(/\s+/g, '') === targetKey || 
+                    k.toLowerCase().includes(item.label.toLowerCase())
+                  );
+
+                  if (foundKey && extractedData[foundKey]) {
+                     const newVal = extractedData[foundKey].toString().trim();
+                     
+                     // 1. Check if Value is Valid (Not "Unknown")
+                     if (!isValidValue(newVal)) return item;
+
+                     const prevVal = item.value ? item.value.toString() : "";
+                     
+                     // 2. Additive Logic (Duplicate Check)
+                     if (!prevVal) {
+                        return { ...item, value: newVal };
+                     } else {
+                        const existingParts = prevVal.split('|').map(p => p.trim());
+                        const isDuplicate = existingParts.some(p => p.toLowerCase() === newVal.toLowerCase());
+                        
+                        if (!isDuplicate) {
+                           return { ...item, value: `${prevVal} | ${newVal}` };
+                        }
+                        return item;
+                     }
+                  }
+                }
+                return item;
+             });
+             setFormData(currentFormData); 
+          }
+
+        } catch (fileErr) {
+          console.error(`Failed to analyze ${fileObj.name}`, fileErr);
+        }
+      }
+
+      // ---------------------------------------------------------
+      // PHASE 2: FINAL SYNTHESIS (THE "SMART" REVIEW)
+      // ---------------------------------------------------------
+      if (!abortAnalysis.current && allFileResults.length > 0) {
+        setProgress(95);
+        
+        if (allFileResults.length > 1) {
+             setStatusMsg('Consolidating data from all files for final accuracy...');
+             
+             const synthesisPrompt = `
+               You are the Lead Estimator. We have analyzed ${allFileResults.length} distinct files (plans and photos) for a project.
+               Here are the raw extractions from each file:
+               ${JSON.stringify(allFileResults, null, 2)}
+
+               Your task:
+               Consolidate these observations into a single, cohesive 'Construction Details' report.
+               
+               Rules for Consolidation:
+               1. **COMBINE, DON'T OVERWRITE:** If one file shows 'Carpet' and another shows 'LVT', list 'LVT & Carpet'.
+               2. **CONDENSE & DEDUPLICATE (CRITICAL):** Do NOT repeat synonyms.
+                  - BAD: "Vinyl Tile | Vinyl Flooring | LVT" --> GOOD: "LVT"
+               3. **SUMMARIZE LISTS:** - Instead of listing every faucet and handle type, provide a high-level summary.
+                  - BAD: "Kohler K-1234, American Standard 456, Chrome Faucet"
+                  - GOOD: "Standard Commercial Fixtures" or "Residential Grade Finishes"
+               4. **EXCLUDE NULL/VAGUE DATA:** If the consolidated result implies "Not visible", "Unknown", or "Cannot be determined", return an empty string/null for that field. DO NOT output "Not visible".
+               5. **Max Counts:** For door counts, use the MAXIMUM count found.
+               
+               Return a FINAL, clean JSON object.
+             `;
+             
+             const apiKey = ""; 
+             const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+             const finalResponse = await fetch(url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  contents: [{ parts: [{ text: synthesisPrompt }] }]
+                })
+             });
+
+             if (finalResponse.ok) {
+               const finalResult = await finalResponse.json();
+               let finalText = finalResult.candidates?.[0]?.content?.parts?.[0]?.text;
+               if (finalText) {
+                 setRawResponse(prev => prev + `\n--- FINAL SYNTHESIS ---\n` + finalText + "\n");
+                 
+                 const fBracket = finalText.indexOf('{');
+                 const lBracket = finalText.lastIndexOf('}');
+                 if (fBracket !== -1 && lBracket !== -1) {
+                   finalText = finalText.substring(fBracket, lBracket + 1);
+                 } else {
+                   finalText = finalText.replace(/```json/g, '').replace(/```/g, '').trim();
+                 }
+                 
+                 const finalData = JSON.parse(finalText);
+                 
+                 // Apply Final Data with Validation
+                 currentFormData = currentFormData.map(item => {
+                    if (item.type === 'field') {
+                      const targetKey = item.label.toLowerCase().replace(/\s+/g, '');
+                      const foundKey = Object.keys(finalData).find(k => 
+                        k.toLowerCase().replace(/\s+/g, '') === targetKey || 
+                        k.toLowerCase().includes(item.label.toLowerCase())
+                      );
+                      
+                      if (foundKey && finalData[foundKey]) {
+                        // Apply same validation to final result to ensure no "Not visible" slips through
+                        if (isValidValue(finalData[foundKey])) {
+                            return { ...item, value: finalData[foundKey] };
+                        }
+                      }
+                    }
+                    return item;
+                 });
+                 setFormData(currentFormData);
+               }
+             }
+        }
+      }
+      
+      setProgress(100);
+      setAnalysisComplete(true);
+      setStatusMsg(`Analysis Complete! Processed and consolidated ${uploadedFiles.length} files.`);
+
+    } catch (error) {
+      console.error("Analysis process error:", error);
+      setErrorMsg("Critical error during analysis loop.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  const handleInputChange = (index, newValue) => {
+    const updated = [...formData];
+    updated[index].value = newValue;
+    setFormData(updated);
+  };
+
+  const exportExcel = () => {
+    if (!window.XLSX) {
+      setErrorMsg("Excel generator library not ready. Please wait a moment and try again.");
+      return;
+    }
+
+    try {
+      const XLSX = window.XLSX;
+      
+      const aoaData = [];
+      const merges = [];
+      
+      const headerStyle = {
+        font: { bold: true, color: { rgb: "000000" } },
+        fill: { fgColor: { rgb: "E2E8F0" } },
+        alignment: { horizontal: "left", vertical: "center" }
+      };
+      
+      const normalStyle = {
+        alignment: { wrapText: true, vertical: "top" } 
+      };
+
+      aoaData.push(["Category / Field", "Value / Description"]);
+      
+      let currentRow = 1; 
+
+      formData.forEach(row => {
+        if (row.type === 'header') {
+          aoaData.push([row.label, ""]);
+          merges.push({ s: { r: currentRow, c: 0 }, e: { r: currentRow, c: 1 } });
+          currentRow++;
+        } else if (row.type === 'spacer') {
+          aoaData.push(["", ""]);
+          currentRow++;
+        } else {
+          aoaData.push([row.label, row.value || ""]);
+          currentRow++;
+        }
+      });
+
+      const ws = XLSX.utils.aoa_to_sheet(aoaData);
+
+      ws['!cols'] = [
+        { wch: 30 }, 
+        { wch: 60 }  
+      ];
+
+      ws['!merges'] = merges;
+
+      const range = XLSX.utils.decode_range(ws['!ref']);
+      for (let R = range.s.r; R <= range.e.r; ++R) {
+        for (let C = range.s.c; C <= range.e.c; ++C) {
+          const cell_address = { c: C, r: R };
+          const cell_ref = XLSX.utils.encode_cell(cell_address);
+          
+          if (!ws[cell_ref]) ws[cell_ref] = { t: 's', v: '' }; 
+
+          if (R === 0) {
+            ws[cell_ref].s = headerStyle;
+            continue;
+          }
+
+          const isHeaderRow = merges.some(m => m.s.r === R);
+          
+          if (isHeaderRow) {
+             ws[cell_ref].s = headerStyle;
+          } else {
+             ws[cell_ref].s = normalStyle;
+          }
+        }
+      }
+
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Construction Details");
+      
+      XLSX.writeFile(wb, "Analyzed_Construction_Details.xlsx");
+
+    } catch (e) {
+      console.error("Export failed:", e);
+      setErrorMsg("Failed to generate Excel file. Please try again.");
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans">
+      <header className="bg-white border-b border-slate-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
+        <div className="flex items-center gap-3">
+          <div className="bg-blue-600 p-2 rounded-lg text-white">
+            <FileSpreadsheet size={24} />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold text-slate-800">PlanToExcel Automator</h1>
+            <p className="text-xs text-slate-500">Auto-fill Construction Details.xlsx</p>
+          </div>
+        </div>
+        <div className="flex gap-2 items-center">
+          {activeTab === 'analyze' && (
+             <button
+               onClick={handleReset}
+               className="text-slate-500 hover:text-red-500 hover:bg-red-50 px-3 py-2 rounded-md transition-colors flex items-center gap-2 text-sm font-medium mr-2"
+             >
+               <RotateCcw size={16} />
+               Start New Project
+             </button>
+          )}
+        </div>
+      </header>
+
+      <main className="max-w-6xl mx-auto p-6">
+        
+        {/* VIEW 1: UPLOAD */}
+        {activeTab === 'upload' && (
+          <div className="flex flex-col items-center justify-center min-h-[60vh] bg-white rounded-xl border-2 border-dashed border-slate-300 p-10 text-center hover:border-blue-400 transition-colors">
+            <div className="bg-blue-50 p-6 rounded-full mb-6">
+              <Upload size={48} className="text-blue-600" />
+            </div>
+            <h2 className="text-2xl font-semibold mb-2">Upload Plans or Photos</h2>
+            <p className="text-slate-500 mb-8 max-w-md">
+              Upload blueprints, PDFs, or site photos. <br/>
+              <span className="text-blue-600 font-medium">Unlimited files ({MAX_FILE_SIZE_MB}MB each).</span>
+            </p>
+            {errorMsg && (
+              <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-red-600 text-sm max-w-md">
+                 {errorMsg}
+              </div>
+            )}
+            <label className="cursor-pointer bg-blue-600 hover:bg-blue-700 text-white px-8 py-3 rounded-lg font-medium transition-all shadow-sm hover:shadow-md">
+              <span>Select Files</span>
+              <input type="file" className="hidden" multiple accept="image/*,application/pdf" onChange={handleFileUpload} />
+            </label>
+            <p className="mt-4 text-xs text-slate-400">Supported formats: PDF, PNG, JPG</p>
+          </div>
+        )}
+
+        {/* VIEW 2: ANALYZE & EDIT (Full Width) */}
+        {activeTab === 'analyze' && (
+          <div className="flex flex-col h-[calc(100vh-140px)] gap-6">
+            
+            {/* Upload Gallery Bar */}
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4">
+               <div className="flex items-center justify-between mb-2">
+                 <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-semibold text-slate-700">Project Files ({uploadedFiles.length})</h3>
+                    {uploadedFiles.length > 0 && (
+                      <button 
+                        onClick={removeAllFiles}
+                        className="text-xs text-red-500 hover:text-red-700 font-medium hover:underline flex items-center gap-1"
+                        title="Clear all files"
+                      >
+                        <Trash2 size={10} />
+                        Remove All
+                      </button>
+                    )}
+                 </div>
+                 <label className="cursor-pointer text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-md hover:bg-blue-100 flex items-center gap-1 font-medium transition-colors">
+                    <Plus size={14} />
+                    Add More
+                    <input type="file" className="hidden" multiple accept="image/*,application/pdf" onChange={handleFileUpload} />
+                 </label>
+               </div>
+               <div className="flex gap-3 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-slate-300">
+                  {uploadedFiles.length === 0 && (
+                    <div className="w-full text-center text-xs text-slate-400 py-4 italic">
+                      No files selected. Add plans or photos to begin.
+                    </div>
+                  )}
+                  {uploadedFiles.map((file, idx) => (
+                    <div key={file.id} className="relative group flex-shrink-0 w-24 h-24 bg-slate-100 rounded-lg border border-slate-200 overflow-hidden">
+                       {/* Thumbnail Logic */}
+                       {file.type.includes('pdf') ? (
+                          <div className="w-full h-full flex flex-col items-center justify-center text-slate-400 p-2">
+                             <FileText size={24} />
+                             <span className="text-[10px] mt-1 text-center leading-tight line-clamp-2 w-full">{file.name}</span>
+                          </div>
+                       ) : (
+                          <img src={file.previewUrl} alt={file.name} className="w-full h-full object-cover" />
+                       )}
+                       
+                       <button 
+                         onClick={() => removeFile(file.id)}
+                         className="absolute top-1 right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                       >
+                         <X size={12} />
+                       </button>
+                    </div>
+                  ))}
+               </div>
+               {errorMsg && (
+                 <div className="mt-2 text-xs text-red-500 font-medium">
+                    {errorMsg}
+                 </div>
+               )}
+            </div>
+
+            <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 overflow-hidden w-full">
+              <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                <div className="flex flex-col flex-1 mr-4">
+                  <div className="flex justify-between mb-1">
+                     <h3 className="font-semibold text-slate-700 flex items-center gap-2">
+                       <FileSpreadsheet size={18} className="text-green-600" />
+                       Extracted Data
+                     </h3>
+                     {statusMsg && <span className="text-xs text-blue-600 font-medium animate-pulse">{statusMsg}</span>}
+                  </div>
+                  {/* Progress Bar */}
+                  {isAnalyzing && (
+                    <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                      <div 
+                        className="h-full bg-blue-500 transition-all duration-300 ease-out"
+                        style={{ width: `${progress}%` }}
+                      ></div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {/* STOP BUTTON */}
+                  {isAnalyzing && (
+                    <button 
+                      onClick={stopAnalysis}
+                      className="bg-red-50 text-red-600 hover:bg-red-100 px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors border border-red-200"
+                    >
+                      <StopCircle size={16} />
+                      Stop
+                    </button>
+                  )}
+
+                  {!analysisComplete && !isAnalyzing && uploadedFiles.length > 0 && (
+                    <button 
+                      onClick={handleAnalyze}
+                      className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors shadow-sm animate-pulse"
+                    >
+                      <Play size={16} />
+                      Fill Spreadsheet
+                    </button>
+                  )}
+
+                  {analysisComplete && (
+                    <button 
+                      onClick={exportExcel}
+                      disabled={!excelLibReady}
+                      className={`bg-green-600 text-white px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-colors ${excelLibReady ? 'hover:bg-green-700' : 'opacity-50 cursor-not-allowed'}`}
+                    >
+                      <Download size={16} />
+                      Download Excel
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto p-2">
+                {isAnalyzing && formData.every(r => !r.value) ? (
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 gap-4">
+                    <RefreshCw size={40} className="animate-spin text-blue-500" />
+                    <p className="text-sm font-medium text-slate-600">Analyzing files one by one...</p>
+                    <p className="text-xs text-slate-400">A final consolidation step will run at the end.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    {formData.map((row, index) => {
+                      if (row.type === 'header') {
+                        return (
+                          <div key={index} className="mt-6 mb-2 px-3 py-1 bg-slate-100 rounded text-xs font-bold uppercase tracking-wider text-slate-500">
+                            {row.label}
+                          </div>
+                        );
+                      }
+                      if (row.type === 'spacer') {
+                        return <div key={index} className="h-4"></div>;
+                      }
+                      
+                      const hasValue = row.value && row.value !== 'Not specified';
+                      
+                      return (
+                        <div key={index} className="flex items-center gap-4 px-3 py-2 hover:bg-slate-50 group rounded-md transition-colors">
+                          <label className="w-1/4 text-sm font-medium text-slate-600 truncate" title={row.label}>
+                            {row.label}
+                          </label>
+                          <div className="flex-1 relative">
+                            <input 
+                              type="text" 
+                              value={row.value}
+                              placeholder="–"
+                              onChange={(e) => handleInputChange(index, e.target.value)}
+                              className={`w-full text-sm px-3 py-2 rounded border focus:ring-2 focus:ring-blue-500 outline-none transition-all ${
+                                analysisComplete && hasValue 
+                                  ? 'bg-blue-50 border-blue-200 text-blue-800 font-medium' 
+                                  : 'bg-white border-slate-200 text-slate-800'
+                              }`}
+                            />
+                            {analysisComplete && hasValue && (
+                               <div className="absolute right-2 top-2.5 text-blue-500">
+                                 <Check size={14} />
+                               </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              
+              <div className="p-3 bg-slate-50 border-t border-slate-200">
+                 <div className="flex justify-between items-center text-xs text-slate-400">
+                    <span>Review data above before export.</span>
+                    <button 
+                      onClick={() => setShowDebug(!showDebug)}
+                      className="flex items-center gap-1 hover:text-slate-600"
+                    >
+                      <Bug size={12} />
+                      {showDebug ? 'Hide Debug' : 'Debug Info'}
+                    </button>
+                 </div>
+                 {showDebug && rawResponse && (
+                    <div className="mt-2 p-2 bg-slate-100 rounded border border-slate-300 h-32 overflow-y-auto font-mono text-[10px] text-slate-700 whitespace-pre-wrap">
+                      {rawResponse}
+                    </div>
+                 )}
+              </div>
+            </div>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default App;
