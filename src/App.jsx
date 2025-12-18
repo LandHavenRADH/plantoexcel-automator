@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, FileSpreadsheet, Check, Download, RefreshCw, FileText, Bug, Play, RotateCcw, X, Plus, Trash2, StopCircle } from 'lucide-react';
+import { Upload, FileSpreadsheet, Check, Download, RefreshCw, FileText, Bug, Play, RotateCcw, X, Plus, Trash2, StopCircle, BrainCircuit, AlertCircle } from 'lucide-react';
 
 const MAX_FILE_SIZE_MB = 25; 
 
@@ -63,20 +63,13 @@ const getInitialFormData = () => [
   { section: "Site", label: "Paving", value: "", type: "field" },
 ];
 
-const isValidValue = (val) => {
-  if (!val) return false;
-  const lower = val.toString().toLowerCase().trim();
-  const forbidden = ["not specified", "not visible", "n/a", "unknown", "see plan", "refer to structural", "cannot be determined", "none found", "not applicable", "undetermined"];
-  return !forbidden.some(f => lower.includes(f));
-};
-
 const App = () => {
   const [activeTab, setActiveTab] = useState('upload');
   const [uploadedFiles, setUploadedFiles] = useState([]); 
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisComplete, setAnalysisComplete] = useState(false);
-  const [errorMsg, setErrorMsg] = useState(null);
   const [statusMsg, setStatusMsg] = useState('');
+  const [errorMsg, setErrorMsg] = useState('');
   const [progress, setProgress] = useState(0); 
   const [rawResponse, setRawResponse] = useState('');
   const [showDebug, setShowDebug] = useState(false);
@@ -96,14 +89,41 @@ const App = () => {
     setActiveTab('analyze');
   };
 
+  const callGeminiWithRetry = async (payload, retries = 5) => {
+    const apiKey = ""; // Runtime provides this
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+    
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        
+        if (response.ok) return await response.json();
+        
+        // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+        const delay = Math.pow(2, i) * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } catch (err) {
+        if (i === retries - 1) throw err;
+        const delay = Math.pow(2, i) * 1000;
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    throw new Error("Maximum retries reached");
+  };
+
   const handleAnalyze = async () => {
     setIsAnalyzing(true);
     setAnalysisComplete(false);
+    setErrorMsg('');
     setProgress(0);
-    setStatusMsg('Starting sequential analysis...');
+    setStatusMsg('Preparing documents...');
+    abortAnalysis.current = false;
     
-    let currentFormData = [...formData];
-    const apiKey = ""; // Environment provides this automatically
+    let updatedFormData = [...formData];
 
     for (let i = 0; i < uploadedFiles.length; i++) {
       if (abortAnalysis.current) break;
@@ -111,116 +131,216 @@ const App = () => {
       setStatusMsg(`Analyzing ${file.name}...`);
       
       try {
-        const reader = new FileReader();
-        const base64Promise = new Promise(resolve => {
+        const base64Data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
           reader.onload = () => resolve(reader.result.split(',')[1]);
+          reader.onerror = reject;
           reader.readAsDataURL(file.rawFile);
         });
-        const base64Data = await base64Promise;
 
+        const fieldLabels = updatedFormData.filter(f => f.type === 'field').map(f => f.label).join(', ');
+        
         const payload = {
           contents: [{
             parts: [
-              { text: `Extract construction details for: ${currentFormData.filter(f => f.type === 'field').map(f => f.label).join(', ')}. Return JSON only.` },
+              { text: `You are a professional construction estimator. Extract data for these fields: ${fieldLabels}. 
+              Return ONLY valid JSON. Use field labels as keys. If a value is missing or "N/A", use "Not specified". 
+              Do not include conversational text or markdown blocks, just the JSON object.` },
               { inlineData: { mimeType: file.type, data: base64Data } }
             ]
           }]
         };
 
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`, {
-          method: 'POST',
-          body: JSON.stringify(payload)
-        });
-
-        const result = await response.json();
-        const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (text) {
-          setRawResponse(prev => prev + text);
-          // Simple JSON extractor logic would go here to update currentFormData
+        const result = await callGeminiWithRetry(payload);
+        const textResponse = result.candidates?.[0]?.content?.parts?.[0]?.text;
+        
+        if (textResponse) {
+          setRawResponse(prev => prev + `\n--- [FILE: ${file.name}] ---\n` + textResponse);
+          try {
+            // Clean markdown artifacts if present
+            const cleanJson = textResponse.replace(/```json|```/g, '').trim();
+            const parsed = JSON.parse(cleanJson);
+            
+            updatedFormData = updatedFormData.map(item => {
+              if (item.type === 'field' && parsed[item.label] && parsed[item.label] !== "Not specified") {
+                // Only overwrite if we found something new and valid
+                return { ...item, value: parsed[item.label] };
+              }
+              return item;
+            });
+            setFormData(updatedFormData);
+          } catch (e) {
+            console.error("JSON Parse Error on file:", file.name, e);
+          }
         }
         setProgress(((i + 1) / uploadedFiles.length) * 100);
       } catch (e) {
-        console.error(e);
+        console.error("Analysis Error:", e);
+        setErrorMsg(`Failed to analyze ${file.name}. Continuing with next...`);
       }
     }
+    
     setIsAnalyzing(false);
     setAnalysisComplete(true);
-    setStatusMsg('Analysis Complete.');
+    setStatusMsg(errorMsg ? 'Analysis finished with some errors.' : 'Analysis Complete.');
   };
 
   const exportExcel = () => {
     const XLSX = window.XLSX;
+    if (!XLSX) {
+      setErrorMsg("Excel library failed to load. Please check your connection.");
+      return;
+    }
     const data = formData.map(f => [f.label, f.value]);
-    const ws = XLSX.utils.aoa_to_sheet([["Field", "Value"], ...data]);
+    const ws = XLSX.utils.aoa_to_sheet([["Construction Field", "Extracted Value"], ...data]);
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Details");
-    XLSX.writeFile(wb, "Construction_Details.xlsx");
+    XLSX.utils.book_append_sheet(wb, ws, "Construction Details");
+    XLSX.writeFile(wb, "Construction_Extraction_Report.xlsx");
   };
 
   return (
-    <div className="max-w-5xl mx-auto p-6">
-      <header className="flex justify-between items-center mb-8 bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-        <div className="flex items-center gap-3">
-          <FileSpreadsheet className="text-blue-600 w-8 h-8" />
-          <h1 className="text-xl font-bold">PlanToExcel Automator</h1>
-        </div>
-        {activeTab === 'analyze' && (
-          <button onClick={() => { setUploadedFiles([]); setActiveTab('upload'); setFormData(getInitialFormData()); }} className="text-sm text-slate-500 flex items-center gap-1 hover:text-red-500">
-            <RotateCcw size={14}/> Reset
-          </button>
-        )}
-      </header>
-
-      {activeTab === 'upload' ? (
-        <div className="border-4 border-dashed border-slate-200 rounded-3xl p-20 text-center bg-white hover:border-blue-400 transition-colors">
-          <Upload className="mx-auto w-16 h-16 text-slate-300 mb-4" />
-          <h2 className="text-2xl font-semibold mb-4">Upload Construction Documents</h2>
-          <label className="bg-blue-600 text-white px-8 py-3 rounded-lg cursor-pointer hover:bg-blue-700 transition-colors inline-block font-medium">
-            Select Plans/Photos
-            <input type="file" multiple className="hidden" onChange={handleFileUpload} />
-          </label>
-        </div>
-      ) : (
-        <div className="space-y-6">
-          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-200 flex items-center justify-between">
-            <div className="flex-1 mr-4">
-              <div className="flex justify-between text-sm mb-1 font-medium">
-                <span>{statusMsg}</span>
-                <span>{Math.round(progress)}%</span>
-              </div>
-              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
-                <div className="bg-blue-600 h-full transition-all" style={{ width: `${progress}%` }}></div>
-              </div>
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      <div className="max-w-5xl mx-auto">
+        <header className="flex justify-between items-center mb-8 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <div className="flex items-center gap-4">
+            <div className="bg-blue-600 p-3 rounded-xl text-white shadow-lg shadow-blue-200">
+              <BrainCircuit size={28} />
             </div>
-            <div className="flex gap-2">
-              {!isAnalyzing && !analysisComplete && <button onClick={handleAnalyze} className="bg-blue-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Play size={16}/> Analyze</button>}
-              {analysisComplete && <button onClick={exportExcel} className="bg-green-600 text-white px-4 py-2 rounded-lg flex items-center gap-2"><Download size={16}/> Export</button>}
+            <div>
+              <h1 className="text-2xl font-bold text-slate-800 tracking-tight">PlanToExcel</h1>
+              <p className="text-slate-500 text-xs font-medium uppercase tracking-widest">Construction Detail Automator</p>
             </div>
           </div>
+          {activeTab === 'analyze' && (
+            <button 
+              onClick={() => { setUploadedFiles([]); setFormData(getInitialFormData()); setActiveTab('upload'); setRawResponse(''); setErrorMsg(''); }}
+              className="flex items-center gap-2 text-sm font-semibold text-slate-400 hover:text-red-500 transition-colors"
+            >
+              <RotateCcw size={16} /> Reset All
+            </button>
+          )}
+        </header>
 
-          <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="p-4 bg-slate-50 border-b border-slate-200 font-bold text-slate-700">Extraction Results</div>
-            <div className="divide-y divide-slate-100 max-h-[60vh] overflow-y-auto">
-              {formData.map((item, idx) => (
-                <div key={idx} className={`p-3 flex items-center gap-4 ${item.type === 'header' ? 'bg-slate-50 font-bold text-xs uppercase tracking-wider text-slate-500' : ''}`}>
-                  <div className="w-1/3 text-sm">{item.label}</div>
-                  {item.type === 'field' && (
-                    <input 
-                      className="flex-1 bg-slate-50 border border-slate-200 rounded px-3 py-1.5 text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                      value={item.value} 
-                      onChange={(e) => {
-                        const next = [...formData];
-                        next[idx].value = e.target.value;
-                        setFormData(next);
-                      }}
-                    />
-                  )}
+        {activeTab === 'upload' ? (
+          <div className="bg-white border-4 border-dashed border-slate-200 rounded-3xl p-16 text-center hover:border-blue-400 transition-all cursor-pointer group shadow-sm">
+            <input type="file" multiple className="hidden" id="file-upload" onChange={handleFileUpload} accept="image/*,application/pdf" />
+            <label htmlFor="file-upload" className="cursor-pointer block">
+              <div className="bg-slate-50 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-6 group-hover:scale-105 transition-transform">
+                <Upload className="text-slate-300 group-hover:text-blue-500 transition-colors" size={40} />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-800 mb-2">Upload Project Documents</h2>
+              <p className="text-slate-400 mb-8 max-w-xs mx-auto text-sm">Select architectural plans, engineering drawings, or site photos for analysis.</p>
+              <span className="bg-blue-600 text-white px-10 py-4 rounded-xl font-bold shadow-lg shadow-blue-100 hover:bg-blue-700 hover:-translate-y-0.5 transition-all inline-block">
+                Choose Files
+              </span>
+            </label>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <div className="flex justify-between items-center mb-4">
+                <div className="flex items-center gap-3">
+                  {isAnalyzing ? <RefreshCw className="animate-spin text-blue-500" size={18} /> : <Check className="text-green-500" size={18} />}
+                  <span className="font-bold text-slate-700">{statusMsg}</span>
                 </div>
-              ))}
+                <span className="text-sm font-black text-blue-600 bg-blue-50 px-3 py-1 rounded-full">{Math.round(progress)}%</span>
+              </div>
+              <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
+                <div className="h-full bg-blue-600 transition-all duration-500 ease-out" style={{ width: `${progress}%` }}></div>
+              </div>
+              
+              {errorMsg && (
+                <div className="mt-4 flex items-center gap-2 text-red-600 bg-red-50 p-3 rounded-xl text-sm font-medium border border-red-100">
+                  <AlertCircle size={16} />
+                  {errorMsg}
+                </div>
+              )}
+
+              <div className="flex gap-4 mt-8">
+                {!isAnalyzing && !analysisComplete && (
+                  <button onClick={handleAnalyze} className="flex-1 bg-blue-600 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-blue-700 shadow-lg shadow-blue-100 transition-all">
+                    <Play size={20} /> Start AI Extraction
+                  </button>
+                )}
+                {analysisComplete && (
+                  <button onClick={exportExcel} className="flex-1 bg-emerald-600 text-white py-4 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-emerald-700 shadow-lg shadow-emerald-100 transition-all">
+                    <Download size={20} /> Export to Excel (.xlsx)
+                  </button>
+                )}
+              </div>
             </div>
+
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="px-6 py-4 bg-slate-50 border-b border-slate-200 flex justify-between items-center">
+                <h3 className="font-bold text-slate-700 flex items-center gap-2">
+                  <FileText size={18} className="text-slate-400" />
+                  Extraction Results
+                </h3>
+                <button onClick={() => setShowDebug(!showDebug)} className="text-slate-400 hover:text-slate-600 p-1">
+                  <Bug size={16} />
+                </button>
+              </div>
+              
+              <div className="max-h-[600px] overflow-y-auto custom-scrollbar">
+                <div className="divide-y divide-slate-100">
+                  {formData.map((item, idx) => (
+                    <div key={idx} className={`px-6 py-4 flex flex-col md:flex-row md:items-center gap-3 transition-colors hover:bg-slate-50/50 ${item.type === 'header' ? 'bg-slate-50/80 sticky top-0 z-10' : ''}`}>
+                      <label className={`md:w-1/3 text-sm ${item.type === 'header' ? 'font-black uppercase tracking-widest text-slate-500 text-xs' : 'font-semibold text-slate-600'}`}>
+                        {item.label}
+                      </label>
+                      
+                      {item.type === 'field' && (
+                        <div className="flex-1 relative group">
+                          <input 
+                            className="w-full bg-white border border-slate-200 rounded-xl px-4 py-2.5 text-sm font-medium text-slate-800 focus:ring-4 focus:ring-blue-500/10 focus:border-blue-500 outline-none transition-all"
+                            value={item.value} 
+                            placeholder="Waiting for analysis..."
+                            onChange={(e) => {
+                              const next = [...formData];
+                              next[idx].value = e.target.value;
+                              setFormData(next);
+                            }}
+                          />
+                          {analysisComplete && item.value && item.value !== "" && item.value !== "Not specified" && (
+                            <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                              <Check size={14} className="text-blue-500" />
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      
+                      {item.type === 'spacer' && <div className="h-4 w-full"></div>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            
+            {showDebug && (
+              <div className="animate-in fade-in slide-in-from-top-4">
+                <div className="bg-slate-900 rounded-2xl p-6 shadow-xl border border-slate-800">
+                  <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-4">
+                    <h4 className="text-white font-bold text-sm uppercase tracking-widest">AI Raw Response Logs</h4>
+                    <button onClick={() => setRawResponse('')} className="text-slate-500 hover:text-white transition-colors">
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                  <pre className="text-emerald-400 font-mono text-[11px] leading-relaxed overflow-x-auto max-h-64 custom-scrollbar whitespace-pre-wrap">
+                    {rawResponse || "No logs available. Start analysis to see raw data."}
+                  </pre>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
+        )}
+      </div>
+      
+      <style>{`
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+      `}</style>
     </div>
   );
 };
